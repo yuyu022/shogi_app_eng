@@ -196,7 +196,7 @@ body{
 <!-- ============【★バージョン記載】============= -->
 <!-- =========================================== -->
 <div id="versionLabel">
-  Ver 1.0.1（2026.02.18 02:20） 
+  Ver 1.0.1（2026.02.18 02:30） 
 </div>
 
 <div id="app">
@@ -988,9 +988,15 @@ let usiWorker = null;
 let usiReadyPromise = null;
 
 function usiPost(cmd){
-  // worker実装によって受け取り形式が違う可能性があるので、まず文字列で投げる
-  usiWorker.postMessage(cmd);
+  // まずはオブジェクト形式（このタイプが多い）
+  try{
+    usiWorker.postMessage({ command: cmd });
+  }catch(e){
+    // だめなら文字列形式
+    usiWorker.postMessage(cmd);
+  }
 }
+
 
 function ensureUsiEngine(){
   if(usiReadyPromise) return usiReadyPromise;
@@ -1006,20 +1012,26 @@ function ensureUsiEngine(){
       let readyOk = false;
 
       usiWorker.onmessage = (ev) => {
-        const text = String(ev.data ?? "");
-        // まとめて来ることがあるので分割して1行ずつ処理する
+        // 文字列 or オブジェクト どちらでも1本化
+        const raw = ev.data;
+        const text =
+          (typeof raw === "string") ? raw :
+          (raw && typeof raw === "object" && typeof raw.line === "string") ? raw.line :
+          (raw && typeof raw === "object" && typeof raw.data === "string") ? raw.data :
+          String(raw ?? "");
+
         const lines = text.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
 
         for(const line of lines){
-          // デバッグしたいときだけ
           // console.log("[USI]", line);
 
           if(line === "readyok"){
-             readyOk = true;
-             resolve(true);
+            resolve(true);
+            return;
           }
-         }
+        }
       };
+
       
       // USI初期化
       usiPost("usi");
@@ -2191,6 +2203,7 @@ loadBookJson("./book.json");
 </script>
 </body>
 </html>
+
 
 
 
