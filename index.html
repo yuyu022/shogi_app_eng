@@ -196,7 +196,7 @@ body{
 <!-- ============【★バージョン記載】============= -->
 <!-- =========================================== -->
 <div id="versionLabel">
-  Ver 1.0.1（2026.02.18 03:30） 
+  Ver 1.0.1（2026.02.18 03:35） 
 </div>
 
 <div id="app">
@@ -988,74 +988,66 @@ let usiWorker = null;
 let usiReadyPromise = null;
 
 function usiPost(cmd){
-  // Workerは {type:"usi", cmd:"..."} 形式しか処理しない
   usiWorker.postMessage({ type: "usi", cmd });
 }
-
 
 function ensureUsiEngine(){
   if(usiReadyPromise) return usiReadyPromise;
 
   usiReadyPromise = new Promise((resolve, reject) => {
+    let settled = false;
+
     try{
       usiWorker = new Worker("./engine/usi_bridge.worker.js");
 
-      usiWorker.onmessage = (e) => {
-        const line = String(e.data);
-        // デバッグ
-        console.log("[ENGINE]", line);
-
-        // ここで "usiok", "readyok", "bestmove ..." を拾う
-      };
-
-      usiWorker.onerror = (e) => {
-        reject(new Error("Worker起動に失敗: " + e.message));
-      };
-
-      let readyOk = false;
-
       usiWorker.onmessage = (ev) => {
-        // worker は {type:"stdout", s:"..."} を返すのでそれも拾う
         const raw = ev.data;
 
+        // workerは {type:"stdout", s:"..."} を返すので raw.s を見る
         const text =
           (typeof raw === "string") ? raw :
-          (raw && typeof raw === "object" && typeof raw.s === "string") ? raw.s :        // ★追加
+          (raw && typeof raw === "object" && typeof raw.s === "string") ? raw.s :
           (raw && typeof raw === "object" && typeof raw.line === "string") ? raw.line :
           (raw && typeof raw === "object" && typeof raw.data === "string") ? raw.data :
           String(raw ?? "");
 
-        // デバッグ（必要なら）
-        // console.log("[USI_RAW]", raw);
-        // console.log("[USI_TEXT]", text);
-
         const lines = text.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
 
         for(const line of lines){
-          if(line === "readyok"){
-            readyOk = true;              // ★これが無いと timeout保険が必ず発火する
+          console.log("[USI]", line);
+
+          if(line === "readyok" && !settled){
+            settled = true;
             resolve(true);
             return;
           }
         }
       };
 
-      
-      // USI初期化
+      usiWorker.onerror = (e) => {
+        if(!settled){
+          settled = true;
+          reject(new Error("Worker起動に失敗: " + e.message));
+        }
+      };
+
+      // USI初期化（メッセージ形式は usiPost が {type:"usi",cmd} に変わった前提）
       usiPost("usi");
-      // オプション（必須ではないけど安定しやすい）
       usiPost("setoption name Threads value 1");
       usiPost("isready");
 
-      // もしreadyokが返らないときの保険
       setTimeout(() => {
-        if(!readyOk){
+        if(!settled){
+          settled = true;
           reject(new Error("USIエンジンが readyok を返しませんでした"));
         }
       }, 10000);
 
     }catch(err){
-      reject(err);
+      if(!settled){
+        settled = true;
+        reject(err);
+      }
     }
   });
 
@@ -2218,6 +2210,7 @@ loadBookJson("./book.json");
 </script>
 </body>
 </html>
+
 
 
 
