@@ -196,7 +196,7 @@ body{
 <!-- ============【★バージョン記載】============= -->
 <!-- =========================================== -->
 <div id="versionLabel">
-  Ver 1.0.1（2026.02.18 01:54） 
+  Ver 1.0.1（2026.02.18 02:20） 
 </div>
 
 <div id="app">
@@ -1006,18 +1006,21 @@ function ensureUsiEngine(){
       let readyOk = false;
 
       usiWorker.onmessage = (ev) => {
-        const line = String(ev.data || "").trim();
-        if(!line) return;
+        const text = String(ev.data ?? "");
+        // まとめて来ることがあるので分割して1行ずつ処理する
+        const lines = text.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
 
-        // デバッグしたいときだけ使う（普段はコメントのままでOK）
-        // console.log("[USI]", line);
+        for(const line of lines){
+          // デバッグしたいときだけ
+          // console.log("[USI]", line);
 
-        if(line === "readyok"){
-          readyOk = true;
-          resolve(true);
-        }
+          if(line === "readyok"){
+             readyOk = true;
+             resolve(true);
+          }
+         }
       };
-
+      
       // USI初期化
       usiPost("usi");
       // オプション（必須ではないけど安定しやすい）
@@ -1044,18 +1047,23 @@ function usiWaitFor(predicate, timeoutMs=8000){
     const start = performance.now();
 
     const handler = (ev) => {
-      const line = String(ev.data || "").trim();
-      if(!line) return;
-      if(predicate(line)){
-        usiWorker.removeEventListener("message", handler);
-        resolve(line);
-      }else{
-        if(performance.now() - start > timeoutMs){
+    const text = String(ev.data ?? "");
+    const lines = text.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
+
+    for(const line of lines){
+        if(predicate(line)){
           usiWorker.removeEventListener("message", handler);
-          reject(new Error("USI応答タイムアウト"));
+          resolve(line);
+          return;
         }
-      }
-    };
+    }
+
+  if(performance.now() - start > timeoutMs){
+    usiWorker.removeEventListener("message", handler);
+    reject(new Error("USI応答タイムアウト"));
+  }
+};
+
 
     usiWorker.addEventListener("message", handler);
   });
@@ -2172,180 +2180,7 @@ function bestMoveApplyAndSpeak(bestMove){
   }
 }
 
-/* =========================
-   やねうら王WASM（USI）連携
-   ========================= */
 
-// 1) Worker起動（ファイルは engine/yaneuraou/ に置いた前提）
-let yaneWorker = null;
-let yaneReadyPromise = null;
-
-function yaneInit(){
-  if(yaneReadyPromise) return yaneReadyPromise;
-
-  yaneWorker = new Worker("./engine/yaneuraou/yaneuraou.worker.js");
-
-  let usiok=false, readyok=false;
-  let resolveReady;
-  yaneReadyPromise = new Promise(res=>resolveReady=res);
-
-  yaneWorker.onmessage = (ev)=>{
-    const line = String(ev.data || "").trim();
-    if(!line) return;
-
-    // console.log("[YaneuraOu]", line);
-
-    if(line === "usiok") usiok=true;
-    if(line === "readyok") readyok=true;
-
-    // readyになったらresolve
-    if(usiok && readyok && resolveReady){
-      resolveReady(true);
-      resolveReady = null;
-    }
-
-    // bestmoveは別ハンドラで待つ（後述）
-    if(_yaneBestmoveWaiter){
-      _yaneBestmoveWaiter(line);
-    }
-  };
-
-  // USIハンドシェイク
-  yaneSend("usi");
-  yaneSend("isready");
-  return yaneReadyPromise;
-}
-
-function yaneSend(cmd){
-  if(!yaneWorker) return;
-  yaneWorker.postMessage(cmd);
-}
-
-// 2) 盤面 → SFEN（内部表現が大小逆なので反転して出力）
-function toSFEN(){
-  // SFENの盤面は 9段を / で区切る。空は数字。成りは +X
-  const ranks = [];
-  const files = 9;
-
-  function convPieceForSFEN(p){
-    // 内部：先手=小文字, 後手=大文字
-    // SFEN：黒(先手)=大文字, 白(後手)=小文字
-    // ⇒ 反転して出す
-    if(!p) return null;
-    const s = stripMeta(p); // ! は無視
-    if(s.startsWith("+")){
-      const core = s.slice(1);
-      const flipped = (core === core.toLowerCase()) ? core.toUpperCase() : core.toLowerCase();
-      return "+" + flipped;
-    }else{
-      const flipped = (s === s.toLowerCase()) ? s.toUpperCase() : s.toLowerCase();
-      return flipped;
-    }
-  }
-
-  for(let y=0;y<9;y++){
-    let row = "";
-    let empties = 0;
-    for(let x=0;x<9;x++){
-      const p = board[y][x];
-      if(!p){
-        empties++;
-      }else{
-        if(empties>0){ row += String(empties); empties=0; }
-        row += convPieceForSFEN(p);
-      }
-    }
-    if(empties>0) row += String(empties);
-    ranks.push(row);
-  }
-
-  // 手番：sente=黒=b, gote=白=w
-  const stm = (turn==="sente") ? "b" : "w";
-
-  // 持ち駒：SFENは「黒の持ち駒(大文字)→白(小文字)」で並べる。無ければ "-"
-  function handToSFEN(){
-    const order = ["R","B","G","S","N","L","P"];
-
-    function count(list){
-      const c={};
-      for(const p of list) c[p]=(c[p]||0)+1;
-      return c;
-    }
-    const cs = count(hands.sente);
-    const cg = count(hands.gote);
-
-    let s = "";
-    for(const k of order){
-      const n = cs[k]||0;
-      if(n>0) s += (n===1 ? k : (String(n)+k));
-    }
-    for(const k of order){
-      const n = cg[k]||0;
-      if(n>0) s += (n===1 ? k.toLowerCase() : (String(n)+k.toLowerCase()));
-    }
-    return s || "-";
-  }
-
-  // 手数（最後は適当でOK。エンジンは気にしないことが多い）
-  const ply = 1;
-
-  return `${ranks.join("/")}` + ` ${stm} ` + `${handToSFEN()}` + ` ${ply}`;
-}
-
-// 3) USIの指し手（例: 7g7f / P*7f / 7g7f+）を内部座標へ変換
-function usiSquareToXY(sq){
-  // sq: "7g"  file:1-9, rank:a-i
-  const file = parseInt(sq[0],10); // 1..9
-  const rankChar = sq[1]; // a..i
-  const ranks = "abcdefghi";
-  const y = ranks.indexOf(rankChar);
-  const x = 9 - file;
-  return {x,y};
-}
-
-function usiMoveToInternalMove(usi){
-  // drop: "P*7f"
-  if(usi.includes("*")){
-    const piece = usi[0]; // "P" etc
-    const toSq = usi.slice(2,4);
-    const to = usiSquareToXY(toSq);
-    return { type:"drop", piece: piece, to, promote:false };
-  }
-
-  // normal: "7g7f" or "7g7f+"
-  const promote = usi.endsWith("+");
-  const core = promote ? usi.slice(0,4) : usi;
-  const fromSq = core.slice(0,2);
-  const toSq   = core.slice(2,4);
-  const from = usiSquareToXY(fromSq);
-  const to   = usiSquareToXY(toSq);
-  return { type:"move", from, to, promote };
-}
-
-// 4) エンジンに「今の局面を考えて bestmove を返して」と頼む
-let _yaneBestmoveWaiter = null;
-
-async function yaneGetBestmoveByDepth(depth){
-  await yaneInit();
-
-  // bestmove待ち
-  const bestmove = await new Promise((resolve)=>{
-    _yaneBestmoveWaiter = (line)=>{
-      if(line.startsWith("bestmove ")){
-        const bm = line.split(/\s+/)[1]; // 例: 7g7f / resign / win
-        _yaneBestmoveWaiter = null;
-        resolve(bm);
-      }
-    };
-
-    const sfen = toSFEN();
-    yaneSend("usinewgame");
-    yaneSend(`position sfen ${sfen}`);
-    yaneSend(`go depth ${depth}`);
-  });
-
-  return bestmove;
-}
 
 
 /* ========= 起動 ========= */
@@ -2356,6 +2191,7 @@ loadBookJson("./book.json");
 </script>
 </body>
 </html>
+
 
 
 
