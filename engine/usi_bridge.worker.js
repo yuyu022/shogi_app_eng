@@ -1,7 +1,6 @@
 // engine/usi_bridge.worker.js
 try {
-  // 同じ engine/ 配下に置いている前提
-  importScripts("./yaneuraou.k-p.js");
+  importScripts("/engine/yaneuraou.k-p.js");
 } catch (e) {
   postMessage("__ENGINE_LOAD_FAILED__ " + (e && e.message ? e.message : String(e)));
   throw e;
