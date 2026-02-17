@@ -130,3 +130,6 @@ else if (typeof define === 'function' && define['amd'])
   define([], function() { return YaneuraOu_K_P; });
 else if (typeof exports === 'object')
   exports["YaneuraOu_K_P"] = YaneuraOu_K_P;
+
+// Force expose for WebWorker
+self.YaneuraOu_K_P = YaneuraOu_K_P;
