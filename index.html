@@ -196,7 +196,7 @@ body{
 <!-- ============【★バージョン記載】============= -->
 <!-- =========================================== -->
 <div id="versionLabel">
-  Ver 1.0.1（2026.02.18 03:00） 
+  Ver 1.0.1（2026.02.18 03:30） 
 </div>
 
 <div id="app">
@@ -988,8 +988,10 @@ let usiWorker = null;
 let usiReadyPromise = null;
 
 function usiPost(cmd){
-  usiWorker.postMessage(cmd);
+  // Workerは {type:"usi", cmd:"..."} 形式しか処理しない
+  usiWorker.postMessage({ type: "usi", cmd });
 }
+
 
 function ensureUsiEngine(){
   if(usiReadyPromise) return usiReadyPromise;
@@ -1013,20 +1015,25 @@ function ensureUsiEngine(){
       let readyOk = false;
 
       usiWorker.onmessage = (ev) => {
-        // 文字列 or オブジェクト どちらでも1本化
+        // worker は {type:"stdout", s:"..."} を返すのでそれも拾う
         const raw = ev.data;
+
         const text =
           (typeof raw === "string") ? raw :
+          (raw && typeof raw === "object" && typeof raw.s === "string") ? raw.s :        // ★追加
           (raw && typeof raw === "object" && typeof raw.line === "string") ? raw.line :
           (raw && typeof raw === "object" && typeof raw.data === "string") ? raw.data :
           String(raw ?? "");
 
+        // デバッグ（必要なら）
+        // console.log("[USI_RAW]", raw);
+        // console.log("[USI_TEXT]", text);
+
         const lines = text.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
 
         for(const line of lines){
-          // console.log("[USI]", line);
-
           if(line === "readyok"){
+            readyOk = true;              // ★これが無いと timeout保険が必ず発火する
             resolve(true);
             return;
           }
@@ -1060,27 +1067,34 @@ function usiWaitFor(predicate, timeoutMs=8000){
     const start = performance.now();
 
     const handler = (ev) => {
-    const text = String(ev.data ?? "");
-    const lines = text.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
+      const raw = ev.data;
+      const text =
+        (typeof raw === "string") ? raw :
+        (raw && typeof raw === "object" && typeof raw.s === "string") ? raw.s :
+        (raw && typeof raw === "object" && typeof raw.line === "string") ? raw.line :
+        (raw && typeof raw === "object" && typeof raw.data === "string") ? raw.data :
+        String(raw ?? "");
 
-    for(const line of lines){
+      const lines = text.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
+
+      for(const line of lines){
         if(predicate(line)){
           usiWorker.removeEventListener("message", handler);
           resolve(line);
           return;
         }
-    }
+      }
 
-  if(performance.now() - start > timeoutMs){
-    usiWorker.removeEventListener("message", handler);
-    reject(new Error("USI応答タイムアウト"));
-  }
-};
-
+      if(performance.now() - start > timeoutMs){
+        usiWorker.removeEventListener("message", handler);
+        reject(new Error("USI応答タイムアウト"));
+      }
+    };
 
     usiWorker.addEventListener("message", handler);
   });
 }
+
 
 /* ===== 現在局面をSFEN文字列にする =====
    - あなたの内部表現: sente=小文字, gote=大文字
@@ -2204,6 +2218,7 @@ loadBookJson("./book.json");
 </script>
 </body>
 </html>
+
 
 
 
