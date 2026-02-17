@@ -196,7 +196,7 @@ body{
 <!-- ============【★バージョン記載】============= -->
 <!-- =========================================== -->
 <div id="versionLabel">
-  Ver 1.0.1（2026.02.18 02:30） 
+  Ver 1.0.1（2026.02.18 02:40） 
 </div>
 
 <div id="app">
@@ -988,22 +988,15 @@ let usiWorker = null;
 let usiReadyPromise = null;
 
 function usiPost(cmd){
-  // まずはオブジェクト形式（このタイプが多い）
-  try{
-    usiWorker.postMessage({ command: cmd });
-  }catch(e){
-    // だめなら文字列形式
-    usiWorker.postMessage(cmd);
-  }
+  usiWorker.postMessage(cmd);
 }
-
 
 function ensureUsiEngine(){
   if(usiReadyPromise) return usiReadyPromise;
 
   usiReadyPromise = new Promise((resolve, reject) => {
     try{
-      usiWorker = new Worker("./engine/yaneuraou.k-p.worker.js");
+      usiWorker = new Worker("./engine/yaneuraou.k-p.js");
 
       usiWorker.onerror = (e) => {
         reject(new Error("Worker起動に失敗: " + e.message));
@@ -2203,6 +2196,7 @@ loadBookJson("./book.json");
 </script>
 </body>
 </html>
+
 
 
 
