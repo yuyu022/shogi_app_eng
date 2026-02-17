@@ -196,7 +196,7 @@ body{
 <!-- ============【★バージョン記載】============= -->
 <!-- =========================================== -->
 <div id="versionLabel">
-  Ver 1.0.1（2026.02.18 02:40） 
+  Ver 1.0.1（2026.02.18 02:50） 
 </div>
 
 <div id="app">
@@ -996,7 +996,15 @@ function ensureUsiEngine(){
 
   usiReadyPromise = new Promise((resolve, reject) => {
     try{
-      usiWorker = new Worker("./engine/yaneuraou.k-p.js");
+      usiWorker = new Worker("./engine/usi_bridge.worker.js");
+
+      usiWorker.onmessage = (e) => {
+        const line = String(e.data);
+        // デバッグ
+        console.log("[ENGINE]", line);
+
+        // ここで "usiok", "readyok", "bestmove ..." を拾う
+      };
 
       usiWorker.onerror = (e) => {
         reject(new Error("Worker起動に失敗: " + e.message));
@@ -2196,6 +2204,7 @@ loadBookJson("./book.json");
 </script>
 </body>
 </html>
+
 
 
 
