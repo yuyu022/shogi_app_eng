@@ -1,43 +1,28 @@
 // engine/usi_bridge.worker.js
-try {
-  importScripts("/engine/yaneuraou.k-p.js");
-} catch (e) {
-  postMessage("__ENGINE_LOAD_FAILED__ " + (e && e.message ? e.message : String(e)));
-  throw e;
-}
+let Module = {
+  // pthread worker が「本体JS」を確実に importScripts できるように指定（重要）
+  mainScriptUrlOrBlob: self.location.origin + "/engine/yaneuraou.k-p.js",
 
-let engine = null;
+  // wasm/worker の場所解決（必要なら）
+  locateFile: (path) => self.location.origin + "/engine/" + path,
 
-function wireOutput(mod) {
-  if (typeof mod.addMessageListener === "function") {
-    mod.addMessageListener((line) => postMessage(String(line)));
-  } else if (typeof mod.print === "function") {
-    const orig = mod.print;
-    mod.print = (line) => {
-      try { postMessage(String(line)); } catch {}
-      try { orig(line); } catch {}
-    };
-  }
-}
+  print: (s) => postMessage({ type: "stdout", s }),
+  printErr: (s) => postMessage({ type: "stderr", s }),
+};
 
-// ★ここがポイント：YaneuraOu_K_P は Promise
-if (!self.YaneuraOu_K_P || typeof self.YaneuraOu_K_P.then !== "function") {
-  postMessage("__ENGINE_API_MISSING__");
-  throw new Error("YaneuraOu_K_P is missing or not a Promise. importScripts path may be wrong.");
-}
+importScripts("/engine/yaneuraou.k-p.js"); // ← まず本体を読み込む
 
-self.YaneuraOu_K_P.then((mod) => {
-  engine = mod;
-  wireOutput(engine);
-  postMessage("__ENGINE_READY__");
-}).catch((e) => {
-  postMessage("__ENGINE_INIT_FAILED__ " + (e && e.message ? e.message : String(e)));
-  throw e;
+let enginePromise = YaneuraOu_K_P(Module); // これは Promise のはず
+
+enginePromise.then(() => {
+  postMessage({ type: "ready" });
 });
 
-self.onmessage = (e) => {
-  if (!engine) return;
-  const msg = e.data;
-  if (typeof msg === "string") engine.postMessage(msg);
-  else if (msg && typeof msg.cmd === "string") engine.postMessage(msg.cmd);
+// メインからUSI文字列を受け取って、ccall で渡す例
+onmessage = async (e) => {
+  if (e.data?.type === "usi") {
+    await enginePromise; // ready待ち
+    const cmd = e.data.cmd; // "isready" など
+    Module.ccall("usi_command", "number", ["string"], [cmd]);
+  }
 };
