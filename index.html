@@ -196,7 +196,7 @@ body{
 <!-- ============【★バージョン記載】============= -->
 <!-- =========================================== -->
 <div id="versionLabel">
-  Ver 1.0.1（2026.02.18 00:20） 
+  Ver 1.0.1（2026.02.18 01:54） 
 </div>
 
 <div id="app">
@@ -977,6 +977,198 @@ function executeMove(sel, x, y, opt){
   render();
   maybeAIMove();
 }
+
+/* =========================================================
+   WASMエンジン（やねうら王） USIブリッジ
+   - engine/yaneuraou.k-p.worker.js をWorkerで起動
+   - "position ...", "go ..." を送り、"bestmove ..." を受け取る
+========================================================= */
+
+let usiWorker = null;
+let usiReadyPromise = null;
+
+function usiPost(cmd){
+  // worker実装によって受け取り形式が違う可能性があるので、まず文字列で投げる
+  usiWorker.postMessage(cmd);
+}
+
+function ensureUsiEngine(){
+  if(usiReadyPromise) return usiReadyPromise;
+
+  usiReadyPromise = new Promise((resolve, reject) => {
+    try{
+      usiWorker = new Worker("./engine/yaneuraou.k-p.worker.js");
+
+      usiWorker.onerror = (e) => {
+        reject(new Error("Worker起動に失敗: " + e.message));
+      };
+
+      let readyOk = false;
+
+      usiWorker.onmessage = (ev) => {
+        const line = String(ev.data || "").trim();
+        if(!line) return;
+
+        // デバッグしたいときだけ使う（普段はコメントのままでOK）
+        // console.log("[USI]", line);
+
+        if(line === "readyok"){
+          readyOk = true;
+          resolve(true);
+        }
+      };
+
+      // USI初期化
+      usiPost("usi");
+      // オプション（必須ではないけど安定しやすい）
+      usiPost("setoption name Threads value 1");
+      usiPost("isready");
+
+      // もしreadyokが返らないときの保険
+      setTimeout(() => {
+        if(!readyOk){
+          reject(new Error("USIエンジンが readyok を返しませんでした"));
+        }
+      }, 10000);
+
+    }catch(err){
+      reject(err);
+    }
+  });
+
+  return usiReadyPromise;
+}
+
+function usiWaitFor(predicate, timeoutMs=8000){
+  return new Promise((resolve, reject) => {
+    const start = performance.now();
+
+    const handler = (ev) => {
+      const line = String(ev.data || "").trim();
+      if(!line) return;
+      if(predicate(line)){
+        usiWorker.removeEventListener("message", handler);
+        resolve(line);
+      }else{
+        if(performance.now() - start > timeoutMs){
+          usiWorker.removeEventListener("message", handler);
+          reject(new Error("USI応答タイムアウト"));
+        }
+      }
+    };
+
+    usiWorker.addEventListener("message", handler);
+  });
+}
+
+/* ===== 現在局面をSFEN文字列にする =====
+   - あなたの内部表現: sente=小文字, gote=大文字
+   - SFEN: 先手(black)=大文字, 後手(white)=小文字
+*/
+function toSFEN(){
+  // 盤
+  const ranks = [];
+  for(let y=0;y<9;y++){
+    let empty = 0;
+    let row = "";
+    for(let x=0;x<9;x++){
+      const p = board[y][x];
+      if(!p){
+        empty++;
+        continue;
+      }
+      if(empty>0){ row += String(empty); empty=0; }
+
+      const s = stripMeta(p);
+      const promoted = s.startsWith("+");
+      const core = promoted ? s.slice(1) : s;
+
+      const owner = ownerOf(p); // "sente" or "gote"
+      // SFENで先手=大文字、後手=小文字にしたい
+      let letter = core.toUpperCase(); // "P" 等
+      if(owner === "gote") letter = letter.toLowerCase();
+
+      row += (promoted ? "+" : "") + letter;
+    }
+    if(empty>0) row += String(empty);
+    ranks.push(row);
+  }
+
+  const boardPart = ranks.join("/");
+
+  // 手番（SFENは先手=b, 後手=w）
+  const turnPart = (turn==="sente") ? "b" : "w";
+
+  // 持ち駒
+  // SFENの持ち駒表記: 先手は大文字、後手は小文字、2枚以上は数字を前に置く
+  function handToSFEN(){
+    const order = ["R","B","G","S","N","L","P"];
+    const count = (arr) => {
+      const m = {R:0,B:0,G:0,S:0,N:0,L:0,P:0};
+      for(const p of arr) m[p]=(m[p]||0)+1;
+      return m;
+    };
+    const sC = count(hands.sente);
+    const gC = count(hands.gote);
+
+    let out = "";
+    for(const k of order){
+      const c = sC[k]||0;
+      if(c===1) out += k;
+      else if(c>1) out += String(c)+k;
+    }
+    for(const k of order){
+      const c = gC[k]||0;
+      if(c===1) out += k.toLowerCase();
+      else if(c>1) out += String(c)+k.toLowerCase();
+    }
+    return out || "-";
+  }
+
+  const handPart = handToSFEN();
+
+  // 手数は適当に1固定でも動きます（本格運用なら増やしてもOK）
+  return `${boardPart} ${turnPart} ${handPart} 1`;
+}
+
+function usiSquareToXY(sq){
+  // USI: "7g" のように file(1-9) + rank(a-i)
+  const file = parseInt(sq[0],10); // 1..9
+  const rank = sq[1]; // a..i
+  const x = 9 - file;
+  const y = "abcdefghi".indexOf(rank);
+  return {x,y};
+}
+
+function parseBestmoveToInternal(bestmoveLine){
+  // 例: "bestmove 7g7f" / "bestmove 7g7f+" / "bestmove P*7f"
+  const parts = bestmoveLine.split(/\s+/);
+  const mv = parts[1];
+  if(!mv || mv==="resign"){
+    return null;
+  }
+
+  // drop: "P*7f"
+  if(mv.includes("*")){
+    const piece = mv[0].toUpperCase(); // "P"
+    const sq = mv.slice(2,4);
+    const to = usiSquareToXY(sq);
+    const idx = hands.gote.indexOf(piece);
+    if(idx<0) return null;
+    return {type:"drop", piece, handIdx: idx, to };
+  }
+
+  // move: "7g7f" (+ optional)
+  const fromSq = mv.slice(0,2);
+  const toSq   = mv.slice(2,4);
+  const promote = mv.endsWith("+");
+
+  const from = usiSquareToXY(fromSq);
+  const to   = usiSquareToXY(toSq);
+  return {type:"move", from, to, promote};
+}
+
+
 
 /* =========================================================
    定跡ブック（A案の安全装置は維持）
@@ -1813,13 +2005,14 @@ function maybeAIMove(){
 
   aiThinking = true;
 
-  setTimeout(()=>{
+  setTimeout(async ()=>{
     try{
-      doAIMove();
+      await doAIMove();
     } finally {
       aiThinking = false;
     }
   }, 150);
+
 }
 
 function aiParamsByLevel(lv){
@@ -1862,42 +2055,57 @@ async function doAIMove(){
   if(gameOver) return;
   if(turn!=="gote") return;
 
-  // ★やねうら王に考えさせる（aiLevel→depthは好みで調整）
-  const depthByLv = {1:4, 2:6, 3:8, 4:10, 5:12};
-  const depth = depthByLv[aiLevel] || 8;
+  // （任意）定跡ブックを残すならこのままでOK
+  const bookMove = pickBookMoveForSide("gote");
+  if(bookMove){
+    bestMoveApplyAndSpeak(bookMove);
+    return;
+  }
 
+  // 1) エンジン起動待ち
   try{
-    const bm = await yaneGetBestmoveByDepth(depth);
-
-    if(!bm || bm==="resign"){
-      speak("コンピュータは指す手がありません。");
-      return;
-    }
-    if(bm==="win"){
-      speak("コンピュータの勝ちです。");
-      return;
-    }
-
-    const mv = usiMoveToInternalMove(bm);
-
-    // 既存の反映関数に合わせて渡す
-    if(mv.type==="move"){
-      bestMoveApplyAndSpeak({type:"move", from:mv.from, to:mv.to, promote:mv.promote});
-    }else{
-      // drop は handIdx が必要なので手駒から探す
-      const idx = hands.gote.indexOf(mv.piece);
-      if(idx<0){
-        speak("コンピュータの持ち駒が見つかりません。");
-        return;
-      }
-      bestMoveApplyAndSpeak({type:"drop", piece:mv.piece, handIdx:idx, to:mv.to});
-    }
-
+    await ensureUsiEngine();
   }catch(e){
     speak("エンジンの起動に失敗しました。");
     console.error(e);
+    return;
   }
+
+  // 2) 現在局面をSFENにして position 送信
+  const sfen = toSFEN();
+  usiPost(`position sfen ${sfen}`);
+
+  // 3) レベルに応じて探索指定（無料＆ブラウザなので軽め推奨）
+  //    強くしたければ depth を上げる（ただし端末が重くなる）
+  let depth = 6;
+  if(aiLevel===1) depth = 4;
+  if(aiLevel===2) depth = 6;
+  if(aiLevel===3) depth = 8;
+  if(aiLevel===4) depth = 10;
+  if(aiLevel===5) depth = 12;
+
+  // 4) go を送って bestmove を待つ
+  usiPost(`go depth ${depth}`);
+
+  let bestLine = null;
+  try{
+    bestLine = await usiWaitFor(line => line.startsWith("bestmove "), 15000);
+  }catch(e){
+    speak("エンジンの応答がありませんでした。");
+    console.error(e);
+    return;
+  }
+
+  // 5) bestmove をあなたの既存処理に渡す
+  const mv = parseBestmoveToInternal(bestLine);
+  if(!mv){
+    speak("コンピュータは指す手がありません。");
+    return;
+  }
+
+  bestMoveApplyAndSpeak(mv);
 }
+
 
 
 /* ========= 実際に反映（CPUはUI確認なしで直接 / 音声文言は変更しない） ========= */
@@ -2148,6 +2356,7 @@ loadBookJson("./book.json");
 </script>
 </body>
 </html>
+
 
 
 
