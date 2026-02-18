@@ -3,6 +3,13 @@
 
 "use strict";
 
+self.addEventListener("error", (e) => {
+  self.postMessage({ type: "fatal", where: "error", message: String(e.message || e), stack: e?.error?.stack });
+});
+self.addEventListener("unhandledrejection", (e) => {
+  self.postMessage({ type: "fatal", where: "unhandledrejection", message: String(e.reason || e), stack: e?.reason?.stack });
+});
+
 /**
  * この worker 自身（engine/usi_bridge.worker.js）の場所を基準に
  *  - yaneuraou.k-p.js
