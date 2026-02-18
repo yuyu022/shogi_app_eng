@@ -196,7 +196,7 @@ body{
 <!-- ============【★バージョン記載】============= -->
 <!-- =========================================== -->
 <div id="versionLabel">
-  Ver 1.0.2（2026.02.18 23:20） 
+  Ver 1.0.2（2026.02.18 23:30） 
 </div>
 
 <div id="app">
@@ -997,64 +997,78 @@ let usiWorker = null;
 let usiReadyPromise = null;
 
 function usiPost(cmd){
-  usiWorker.postMessage({ type: "usi", cmd });
+  // usi_bridge.worker.js に {type:"cmd", line:"..."} で渡す
+  usiWorker.postMessage({ type: "cmd", line: cmd });
 }
 
-function ensureUsiEngine(){
+  function ensureUsiEngine(){
   if(usiReadyPromise) return usiReadyPromise;
 
   usiReadyPromise = new Promise((resolve, reject) => {
     let settled = false;
 
+    // タイムアウト（readyok が来ないとき止まりっぱなしにしない）
+    const timer = setTimeout(() => {
+      if(!settled){
+        settled = true;
+        try{ usiWorker?.terminate(); }catch(_){}
+        reject(new Error("USIエンジンが readyok を返しませんでした（タイムアウト）"));
+      }
+    }, 12000);
+
     try{
-      usiWorker = new Worker("./engine/usi_bridge.worker.js");
+      // ★ここ重要：相対パス事故を防ぐためURLで作る
+      usiWorker = new Worker(new URL("./engine/usi_bridge.worker.js", window.location.href), { type:"classic" });
 
       usiWorker.onmessage = (ev) => {
-        const raw = ev.data;
+        const msg = ev.data || {};
 
-        // workerは {type:"stdout", s:"..."} を返すので raw.s を見る
-        const text =
-          (typeof raw === "string") ? raw :
-          (raw && typeof raw === "object" && typeof raw.s === "string") ? raw.s :
-          (raw && typeof raw === "object" && typeof raw.line === "string") ? raw.line :
-          (raw && typeof raw === "object" && typeof raw.data === "string") ? raw.data :
-          String(raw ?? "");
+        // ブリッジが落ちたら fatal が来る想定（原因が見える）
+        if(msg.type === "fatal" && !settled){
+          settled = true;
+          clearTimeout(timer);
+          reject(new Error(`fatal: ${msg.where}: ${msg.message}\n${msg.stack || ""}`));
+          return;
+        }
 
-        const lines = text.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
+        // デバッグ用ログ（Consoleに出ます）
+        if(msg.type === "log"){
+          console.debug("[usi_bridge]", msg.message);
+        }
+        if(msg.type === "stderr"){
+          console.debug("[usi_bridge][stderr]", msg.data);
+        }
 
-        for(const line of lines){
-          console.log("[USI]", line);
+        // readyok 通知（ブリッジ側が readyok を検出して type:"readyok" を送る）
+        if(msg.type === "readyok" && !settled){
+          settled = true;
+          clearTimeout(timer);
+          resolve(true);
+          return;
+        }
 
-          if(line === "readyok" && !settled){
-            settled = true;
-            resolve(true);
-            return;
-          }
+        // 参考：stdout を見たいとき
+        if(msg.type === "stdout" && msg.line){
+          console.log("[USI]", msg.line);
         }
       };
 
       usiWorker.onerror = (e) => {
         if(!settled){
           settled = true;
+          clearTimeout(timer);
           reject(new Error("Worker起動に失敗: " + e.message));
         }
       };
 
-      // USI初期化（メッセージ形式は usiPost が {type:"usi",cmd} に変わった前提）
-      usiPost("usi");
-      usiPost("setoption name Threads value 1");
-      usiPost("isready");
-
-      setTimeout(() => {
-        if(!settled){
-          settled = true;
-          reject(new Error("USIエンジンが readyok を返しませんでした"));
-        }
-      }, 10000);
+      // ★ここ重要：ブリッジに start を送る
+      // ブリッジが内部で usi -> isready を自動でやって readyok まで進めます
+      usiWorker.postMessage({ type: "start" });
 
     }catch(err){
       if(!settled){
         settled = true;
+        clearTimeout(timer);
         reject(err);
       }
     }
@@ -1062,6 +1076,7 @@ function ensureUsiEngine(){
 
   return usiReadyPromise;
 }
+
 
 function usiWaitFor(predicate, timeoutMs=8000){
   return new Promise((resolve, reject) => {
@@ -2219,6 +2234,7 @@ loadBookJson("./book.json");
 </script>
 </body>
 </html>
+
 
 
 
