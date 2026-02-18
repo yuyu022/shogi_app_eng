@@ -22,7 +22,17 @@ async function boot(){
     }
 
     log("starting YaneuraOu_K_P(Module) ...");
-    engine = await self.YaneuraOu_K_P();
+
+    const mainScriptUrl = absUrl("./yaneuraou.k-p.js");
+
+    engine = await self.YaneuraOu_K_P({
+      // pthread 子worker が importScripts する「親スクリプト」を明示
+      mainScriptUrlOrBlob: mainScriptUrl,
+
+      // wasm / worker を確実に engine/ 配下から解決
+      locateFile: (p) => absUrl("./" + p),
+    });
+
     log("engineModule resolved");
 
     if(typeof engine.addMessageListener === "function"){
