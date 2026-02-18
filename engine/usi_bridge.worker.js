@@ -1,81 +1,101 @@
-// engine/engine.worker.js
+// engine/usi_bridge.worker.js
 "use strict";
 
-function absUrl(rel) {
+function absUrl(rel){
   return new URL(rel, self.location.href).toString();
 }
 
-let engine = null;
-let engineReady = false;
-let inQ = [];
+let engineWorker = null;
+let started = false;
+let buf = ""; // stdoutの改行分割用
 
-function log(msg) {
-  self.postMessage({ type: "log", message: String(msg) });
+function log(msg){ self.postMessage({ type:"log", message:String(msg) }); }
+function fatal(where, err){
+  self.postMessage({
+    type: "fatal",
+    where,
+    message: String(err?.message || err),
+    stack: err?.stack || ""
+  });
 }
-function sendStdoutLine(line) {
-  self.postMessage({ type: "stdout", data: String(line) + "\n" });
-}
-function sendStderrLine(line) {
-  self.postMessage({ type: "stderr", data: String(line) + "\n" });
-}
 
-async function boot() {
-  try {
-    // ★相対ではなく絶対URLでロード
-    importScripts(absUrl("./yaneuraou.k-p.js"));
-
-    if (typeof self.YaneuraOu_K_P !== "function") {
-      throw new Error("YaneuraOu_K_P is not exposed on self");
-    }
-
-    log("starting YaneuraOu_K_P(Module) ...");
-
-    engine = await self.YaneuraOu_K_P();
-    log("engineModule resolved");
-
-    if (typeof engine.addMessageListener === "function") {
-      engine.addMessageListener((line) => sendStdoutLine(line));
-    } else {
-      sendStderrLine("engine.addMessageListener is missing");
-    }
-
-    engineReady = true;
-    log("engine input ready");
-
-    for (const s of inQ) {
-      try {
-        engine.postMessage(s);
-      } catch (e) {
-        sendStderrLine("send failed: " + (e?.message || e));
-      }
-    }
-    inQ = [];
-  } catch (e) {
-    sendStderrLine("boot failed: " + (e?.message || e));
-    throw e;
+function emitStdoutLine(line){
+  self.postMessage({ type:"stdout", line });
+  // readyok などの検出
+  if(line === "readyok"){
+    self.postMessage({ type:"readyok" });
   }
 }
 
-function handleStdin(data) {
-  const s = String(data ?? "").replace(/\r?\n$/, "");
-  if (!s) return;
+function startEngine(){
+  if(started) return;
+  started = true;
 
-  if (!engineReady || !engine) {
-    inQ.push(s);
-    sendStderrLine(`queued input (engine not ready yet): ${s}`);
+  const wurl = absUrl("./engine.worker.js");
+  log("start engine worker: " + wurl);
+
+  engineWorker = new Worker(wurl, { type:"classic" });
+
+  engineWorker.onmessage = (ev)=>{
+    const msg = ev.data || {};
+
+    if(msg.type === "stdout" && typeof msg.data === "string"){
+      // dataは "\n"付きで来る想定
+      buf += msg.data;
+      const lines = buf.split(/\r?\n/);
+      buf = lines.pop() ?? "";
+      for(const ln of lines){
+        const s = ln.trim();
+        if(s) emitStdoutLine(s);
+      }
+      return;
+    }
+
+    if(msg.type === "stderr"){
+      self.postMessage({ type:"stderr", data: msg.data });
+      return;
+    }
+    if(msg.type === "log"){
+      // engine側のログも流す（見たければ）
+      self.postMessage({ type:"engine_log", message: msg.message });
+      return;
+    }
+
+    // その他
+    self.postMessage({ type:"engine_raw", data: msg });
+  };
+
+  engineWorker.onerror = (e)=>{
+    fatal("engineWorker:error", e);
+  };
+
+  // 起動したらUSI初期化を自動で流す
+  sendCmd("usi");
+  // usiok待ち→isready は本当は待つのが理想だけど、
+  // まずは即投げでも多くのUSIエンジンで通る
+  sendCmd("isready");
+}
+
+function sendCmd(line){
+  if(!engineWorker){
+    // start前に来たら無視 or キューでもOK
+    return;
+  }
+  engineWorker.postMessage({ type:"stdin", data: String(line) + "\n" });
+}
+
+self.onmessage = (e)=>{
+  const msg = e.data || {};
+
+  if(msg.type === "start"){
+    startEngine();
     return;
   }
 
-  try {
-    engine.postMessage(s);
-  } catch (e) {
-    sendStderrLine("engine input not ready (" + (e?.message || e) + ")");
+  // index.html からのコマンド
+  if(msg.type === "cmd"){
+    if(!started) startEngine();
+    sendCmd(msg.line);
+    return;
   }
-}
-
-self.onmessage = (e) => {
-  const msg = e.data || {};
-  if (msg.type === "stdin") handleStdin(msg.data);
 };
-
-boot();
