@@ -196,7 +196,7 @@ body{
 <!-- ============【★バージョン記載】============= -->
 <!-- =========================================== -->
 <div id="versionLabel">
-  Ver 1.0.2（2026.02.18 23:58） 
+  Ver 1.0.2（2026.02.19 00:10） 
 </div>
 
 <div id="app">
@@ -1018,9 +1018,10 @@ function usiPost(cmd){
 
     try{
       // ★ここ重要：相対パス事故を防ぐためURLで作る
-      usiWorker = new Worker(new URL("./engine/usi_bridge.worker.js", window.location.href), { type:"classic" });
+      usiWorker = new Worker(new URL("./engine/usi_bridge.worker.js?v=20260219_1", window.location.href), { type:"classic" });
 
       usiWorker.onmessage = (ev) => {
+        console.log("[usi_bridge][raw]", ev.data);
         const msg = ev.data || {};
 
         // ブリッジが落ちたら fatal が来る想定（原因が見える）
@@ -1033,10 +1034,10 @@ function usiPost(cmd){
 
         // デバッグ用ログ（Consoleに出ます）
         if(msg.type === "log"){
-          console.debug("[usi_bridge]", msg.message);
+          console.log("[usi_bridge]", msg.message);
         }
         if(msg.type === "stderr"){
-          console.debug("[usi_bridge][stderr]", msg.data);
+          console.log("[usi_bridge][stderr]", msg.data);
         }
 
         // readyok 通知（ブリッジ側が readyok を検出して type:"readyok" を送る）
@@ -2236,6 +2237,7 @@ loadBookJson("./book.json");
 </script>
 </body>
 </html>
+
 
 
 
