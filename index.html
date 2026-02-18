@@ -196,7 +196,7 @@ body{
 <!-- ============【★バージョン記載】============= -->
 <!-- =========================================== -->
 <div id="versionLabel">
-  Ver 1.0.2（2026.02.19 00:21） 
+  Ver 1.0.2（2026.02.19 00:25） 
 </div>
 
 <div id="app">
@@ -1042,6 +1042,7 @@ function usiPost(cmd){
         if(msg.type === "engine_raw"){
           console.log("[engine_raw]", msg.data);
         }
+        
         // readyok 通知（ブリッジ側が readyok を検出して type:"readyok" を送る）
         if(msg.type === "readyok" && !settled){
           settled = true;
@@ -2239,6 +2240,7 @@ loadBookJson("./book.json");
 </script>
 </body>
 </html>
+
 
 
 
