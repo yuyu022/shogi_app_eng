@@ -1,6 +1,8 @@
 // engine/usi_bridge.worker.js
 
-// 1) 落ちたら必ず親へ見える形で返す
+// ===============================
+// 0) 落ちたら必ず親へ見える形で返す
+// ===============================
 self.addEventListener("error", (e) => {
   self.postMessage({
     type: "fatal",
@@ -30,15 +32,28 @@ function log(msg) {
   self.postMessage({ type: "log", message: msg });
 }
 
+// ===============================
+// 1) エンジンへ送る（2方式で送る）
+// - A: {type:"stdin", data:"...\n"}
+// - B: {type:"usi", cmd:"..."}  ※保険
+// ===============================
 function sendToEngine(line) {
   if (!engineWorker) return;
+
   const s = line.endsWith("\n") ? line : line + "\n";
-  engineWorker.postMessage({ type: "stdin", data: s });
+
+  // どっちの形式でも通るように保険で両方送る
+  try { engineWorker.postMessage({ type: "stdin", data: s }); } catch (_) {}
+  try { engineWorker.postMessage({ type: "usi", cmd: line }); } catch (_) {}
+
   log(">> " + line);
 }
 
+// ===============================
+// 2) エンジンstdoutを「行」で処理する
+// ===============================
 function handleLine(lineRaw) {
-  const line = lineRaw.replace(/\r$/, "");
+  const line = String(lineRaw ?? "").replace(/\r$/, "");
   if (!line) return;
 
   log("<< " + line);
@@ -47,15 +62,20 @@ function handleLine(lineRaw) {
   if (phase === "sent_usi" && line.trim() === "usiok") {
     sendToEngine("isready");
     phase = "sent_isready";
+    // usiok も親へ流す（デバッグに便利）
+    self.postMessage({ type: "stdout", line });
     return;
   }
+
   if (phase === "sent_isready" && line.trim() === "readyok") {
     phase = "ready";
+    // readyok も親へ流す（デバッグに便利）
+    self.postMessage({ type: "stdout", line });
     self.postMessage({ type: "readyok" });
     return;
   }
 
-  // 他の行も親に流しておく（必要ならGUI側で読む）
+  // 他の行も親へ流しておく（bestmove 等もここに来る）
   self.postMessage({ type: "stdout", line });
 }
 
@@ -69,8 +89,11 @@ function onEngineStdout(chunk) {
   }
 }
 
+// ===============================
+// 3) エンジンworker起動
+// ===============================
 function startEngine() {
-  // 2) worker パスは絶対URLで。相対パス事故を潰す
+  // 相対パス事故を防ぐため絶対URL化
   const wurl = absUrl("./yaneuraou.k-p.worker.js");
   engineWorker = new Worker(wurl, { type: "classic" });
 
@@ -83,26 +106,79 @@ function startEngine() {
   });
 
   engineWorker.onmessage = (e) => {
-    const msg = e.data || {};
-    if (msg.type === "stdout") onEngineStdout(msg.data);
-    else if (msg.type === "stderr") self.postMessage({ type: "stderr", data: String(msg.data || "") });
-    else if (msg.type === "log") self.postMessage({ type: "log", message: String(msg.message || "") });
-    else if (typeof msg === "string") onEngineStdout(msg);
+    const msg = e.data;
+
+    // (1) 文字列で来る場合
+    if (typeof msg === "string") {
+      onEngineStdout(msg);
+      return;
+    }
+
+    // (2) オブジェクトで来る場合
+    const m = msg || {};
+    const t = m.type;
+
+    if (t === "stdout") {
+      // data / s / line どれでも拾う
+      const out =
+        (typeof m.data === "string") ? m.data :
+        (typeof m.s === "string") ? m.s :
+        (typeof m.line === "string") ? (m.line + "\n") : // 1行形式なら改行補完
+        "";
+      onEngineStdout(out);
+      return;
+    }
+
+    if (t === "stderr") {
+      const errText =
+        (typeof m.data === "string") ? m.data :
+        (typeof m.s === "string") ? m.s :
+        (typeof m.line === "string") ? m.line :
+        "";
+      self.postMessage({ type: "stderr", data: String(errText || "") });
+      return;
+    }
+
+    if (t === "log") {
+      self.postMessage({ type: "log", message: String(m.message || "") });
+      return;
+    }
+
+    // (3) 型が違うけど中に文字列がありそうな場合の保険
+    const fallback =
+      (typeof m.data === "string") ? m.data :
+      (typeof m.s === "string") ? m.s :
+      (typeof m.line === "string") ? (m.line + "\n") :
+      "";
+    if (fallback) onEngineStdout(fallback);
   };
 
-  // 3) 起動したら必ず usi を送る
+  // 起動したら必ず usi を送る
   phase = "sent_usi";
   sendToEngine("usi");
 }
 
+// ===============================
+// 4) 親からのメッセージ
+// - {type:"start"} で起動
+// - {type:"cmd", line:"position ..."} などを転送
+// ===============================
 self.onmessage = (e) => {
   const msg = e.data || {};
+
   if (msg.type === "start") {
     startEngine();
     return;
   }
-  // GUI側からのコマンド（position/go/stop など）を転送
+
   if (msg.type === "cmd") {
     sendToEngine(String(msg.line || ""));
+    return;
+  }
+
+  // もし親が旧形式 {type:"usi", cmd:"..."} を送ってきても受ける（保険）
+  if (msg.type === "usi") {
+    sendToEngine(String(msg.cmd || ""));
+    return;
   }
 };
