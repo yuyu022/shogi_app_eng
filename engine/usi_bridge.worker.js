@@ -101,6 +101,7 @@ function startEngine() {
   });
 
   engineWorker.onmessage = (e) => {
+    self.postMessage({ type: "engine_raw", data: e.data }); // ★追加
     const msg = e.data;
 
     // ★ここが見える化ポイント：最初の数秒は「生の受信」をログに出す
