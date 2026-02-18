@@ -1,143 +1,81 @@
-// engine/usi_bridge.worker.js
-
-// 落ちたら必ず親へ見える形で返す
-self.addEventListener("error", (e) => {
-  self.postMessage({
-    type: "fatal",
-    where: "usi_bridge:error",
-    message: String(e.message || e),
-    stack: e?.error?.stack,
-  });
-});
-self.addEventListener("unhandledrejection", (e) => {
-  self.postMessage({
-    type: "fatal",
-    where: "usi_bridge:unhandledrejection",
-    message: String(e.reason || e),
-    stack: e?.reason?.stack,
-  });
-});
-
-let engineWorker = null;
-let buf = "";
-let phase = "boot"; // boot -> sent_usi -> wait_readyok -> ready
-
-let readyRetryTimer = null;
-let readyRetryCount = 0;
+// engine/engine.worker.js
+"use strict";
 
 function absUrl(rel) {
   return new URL(rel, self.location.href).toString();
 }
 
+let engine = null;
+let engineReady = false;
+let inQ = [];
+
 function log(msg) {
-  self.postMessage({ type: "log", message: msg });
+  self.postMessage({ type: "log", message: String(msg) });
+}
+function sendStdoutLine(line) {
+  self.postMessage({ type: "stdout", data: String(line) + "\n" });
+}
+function sendStderrLine(line) {
+  self.postMessage({ type: "stderr", data: String(line) + "\n" });
 }
 
-function sendToEngine(line) {
-  if (!engineWorker) return;
-  const s = line.endsWith("\n") ? line : line + "\n";
-  engineWorker.postMessage({ type: "stdin", data: s });
-  log(">> " + line);
-}
+async function boot() {
+  try {
+    // ★相対ではなく絶対URLでロード
+    importScripts(absUrl("./yaneuraou.k-p.js"));
 
-function startReadyRetry() {
-  stopReadyRetry();
-  readyRetryCount = 0;
-
-  // readyok が来ないときの保険：isready を再送
-  readyRetryTimer = setInterval(() => {
-    if (phase !== "wait_readyok") return;
-    readyRetryCount++;
-    log(`(retry) isready x${readyRetryCount}`);
-    sendToEngine("isready");
-
-    // 無限にやらない（GUI側の timeout より少し短めで止める）
-    if (readyRetryCount >= 10) {
-      stopReadyRetry();
-      log("(retry) give up isready");
+    if (typeof self.YaneuraOu_K_P !== "function") {
+      throw new Error("YaneuraOu_K_P is not exposed on self");
     }
-  }, 400);
-}
 
-function stopReadyRetry() {
-  if (readyRetryTimer) {
-    clearInterval(readyRetryTimer);
-    readyRetryTimer = null;
+    log("starting YaneuraOu_K_P(Module) ...");
+
+    engine = await self.YaneuraOu_K_P();
+    log("engineModule resolved");
+
+    if (typeof engine.addMessageListener === "function") {
+      engine.addMessageListener((line) => sendStdoutLine(line));
+    } else {
+      sendStderrLine("engine.addMessageListener is missing");
+    }
+
+    engineReady = true;
+    log("engine input ready");
+
+    for (const s of inQ) {
+      try {
+        engine.postMessage(s);
+      } catch (e) {
+        sendStderrLine("send failed: " + (e?.message || e));
+      }
+    }
+    inQ = [];
+  } catch (e) {
+    sendStderrLine("boot failed: " + (e?.message || e));
+    throw e;
   }
 }
 
-function handleLine(lineRaw) {
-  const line = lineRaw.replace(/\r$/, "");
-  if (!line) return;
+function handleStdin(data) {
+  const s = String(data ?? "").replace(/\r?\n$/, "");
+  if (!s) return;
 
-  log("<< " + line);
-
-  // 状態機械：usi -> usiok -> isready -> readyok
-  if (phase === "sent_usi" && line.trim() === "usiok") {
-    log("got usiok -> send isready");
-    sendToEngine("isready");
-    phase = "wait_readyok";
-    startReadyRetry();
+  if (!engineReady || !engine) {
+    inQ.push(s);
+    sendStderrLine(`queued input (engine not ready yet): ${s}`);
     return;
   }
 
-  if (phase === "wait_readyok" && line.trim() === "readyok") {
-    stopReadyRetry();
-    phase = "ready";
-    log("got readyok -> READY");
-    self.postMessage({ type: "readyok" });
-    return;
+  try {
+    engine.postMessage(s);
+  } catch (e) {
+    sendStderrLine("engine input not ready (" + (e?.message || e) + ")");
   }
-
-  // 他の行も親に流しておく（必要ならGUI側で読む）
-  self.postMessage({ type: "stdout", line });
-}
-
-function onEngineStdout(chunk) {
-  buf += String(chunk || "");
-  let idx;
-  while ((idx = buf.indexOf("\n")) >= 0) {
-    const line = buf.slice(0, idx);
-    buf = buf.slice(idx + 1);
-    handleLine(line);
-  }
-}
-
-function startEngine() {
-  // engine worker を起動（ここは engine/engine.worker.js を呼ぶ）
-  const wurl = absUrl("./engine.worker.js");
-  engineWorker = new Worker(wurl, { type: "classic" });
-
-  engineWorker.addEventListener("error", (e) => {
-    self.postMessage({
-      type: "fatal",
-      where: "engineWorker:error",
-      message: String(e.message || e),
-    });
-  });
-
-  engineWorker.onmessage = (e) => {
-    const msg = e.data || {};
-    if (msg.type === "stdout") onEngineStdout(msg.data);
-    else if (msg.type === "stderr") self.postMessage({ type: "stderr", data: String(msg.data || "") });
-    else if (msg.type === "log") self.postMessage({ type: "log", message: String(msg.message || "") });
-    else if (typeof msg === "string") onEngineStdout(msg);
-  };
-
-  phase = "sent_usi";
-  stopReadyRetry();
-  log("send usi");
-  sendToEngine("usi");
 }
 
 self.onmessage = (e) => {
   const msg = e.data || {};
-  if (msg.type === "start") {
-    startEngine();
-    return;
-  }
-  // GUI側からのコマンド（position/go/stop など）を転送
-  if (msg.type === "cmd") {
-    sendToEngine(String(msg.line || ""));
-  }
+  if (msg.type === "stdin") handleStdin(msg.data);
 };
+
+boot();
