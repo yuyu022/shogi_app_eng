@@ -91,6 +91,7 @@ function startEngine() {
   log("start engine worker: " + wurl);
 
   engineWorker = new Worker(wurl, { type: "classic" });
+  log("engineWorker created");
 
   engineWorker.addEventListener("error", (e) => {
     self.postMessage({
