@@ -7,28 +7,40 @@ function postOut(s) {
 function postErr(s) {
   postMessage({ type: "stderr", data: String(s ?? "") + "\n" });
 }
+function log(s) {
+  postMessage({ type: "log", message: String(s ?? "") });
+}
 
-// Module を先に用意（print/printErr を差し替え）
-self.Module = self.Module || {};
-Module.print = postOut;
-Module.printErr = postErr;
+// Module を用意（Emscripten に渡す）
+let Mod = (self.Module = self.Module || {});
 
-// エンジン本体ロード
+// stdout/stderr を usi_bridge に返す
+Mod.print = postOut;
+Mod.printErr = postErr;
+
+// ★重要：wasm と pthread worker のパス解決（同じ engine/ 配下にある前提）
+Mod.locateFile = (path, prefix) => {
+  // prefix は無視して「この worker から見た相対」で固定
+  // （Cloudflare Pages などで prefix が変になりがちなので）
+  return "./" + path;
+};
+
+// エンジン本体ロード（MODULARIZE なので “関数” が生える）
 importScripts("./yaneuraou.k-p.js");
 
-// --- ここが肝：入力口を「生えるまで待つ」 ---
+// --- MODULARIZE 起動 ---
+let engineModule = null; // 起動後の実体（ここに postMessage が生える）
 let pending = [];
-let engineReady = false;
+let started = false;
 
 function getInputFn() {
-  // 1) Module.postMessage（理想）
+  // 起動後は engineModule.postMessage が入口になる
+  if (engineModule && typeof engineModule.postMessage === "function") {
+    return (line) => engineModule.postMessage(line);
+  }
+  // 念のため Module に生えるケースも拾う
   if (self.Module && typeof self.Module.postMessage === "function") {
     return (line) => self.Module.postMessage(line);
-  }
-  // 2) YaneuraOu_K_P が ready を返すなら、それが解決後に Module が整う可能性
-  // （直接入力関数があるケースも一応探す）
-  if (self.YaneuraOu_K_P && typeof self.YaneuraOu_K_P.postMessage === "function") {
-    return (line) => self.YaneuraOu_K_P.postMessage(line);
   }
   return null;
 }
@@ -41,35 +53,46 @@ function flushPending() {
   return true;
 }
 
-async function waitUntilReady() {
-  // yaneuraou.k-p.js は `return YaneuraOu_K_P.ready` しているので、それを待つ
-  try {
-    if (self.YaneuraOu_K_P && self.YaneuraOu_K_P.ready) {
-      await self.YaneuraOu_K_P.ready;
-    }
-  } catch (e) {
-    postErr("engine ready promise rejected: " + (e?.message || e));
-  }
+async function startEngineOnce() {
+  if (started) return;
+  started = true;
 
-  // ready後も postRun タイミングで postMessage が生えるので少し待ちながらリトライ
-  const t0 = Date.now();
-  while (Date.now() - t0 < 5000) {
-    if (flushPending()) {
-      engineReady = true;
-      postMessage({ type: "log", message: "engine input ready" });
+  try {
+    if (typeof self.YaneuraOu_K_P !== "function") {
+      postErr("YaneuraOu_K_P is not a function (MODULARIZE init failed)");
       return;
     }
-    await new Promise((r) => setTimeout(r, 50));
-  }
 
-  postErr("engine input not ready (Module.postMessage missing)");
+    log("starting YaneuraOu_K_P(Module) ...");
+
+    // ★ここが肝：MODULARIZE を起動
+    engineModule = await self.YaneuraOu_K_P(Mod);
+
+    log("engineModule resolved");
+
+    // 念のため stdout/stderr を確実にこちらに向ける
+    engineModule.print = postOut;
+    engineModule.printErr = postErr;
+
+    // postMessage が生えてるはず
+    if (!flushPending()) {
+      postErr("engine started but input still missing (no postMessage)");
+    } else {
+      log("engine input ready");
+    }
+  } catch (e) {
+    postErr("engine start failed: " + (e?.message || e));
+    if (e?.stack) postErr(e.stack);
+  }
 }
 
-waitUntilReady();
-
+// usi_bridge からの入力
 self.onmessage = (e) => {
   const msg = e.data || {};
   if (msg.type !== "stdin") return;
+
+  // 最初の入力が来たら起動（start が呼ばれなくても動くように）
+  startEngineOnce();
 
   const text = String(msg.data || "");
   const lines = text.split(/\r?\n/).filter(Boolean);
@@ -78,9 +101,10 @@ self.onmessage = (e) => {
   if (fn) {
     for (const one of lines) fn(one);
   } else {
-    // まだ準備できてない → キューに溜める
     pending.push(...lines);
-    // 念のため状況をstderrへ（親に届く）
     postErr("queued input (engine not ready yet): " + lines.join(" | "));
   }
 };
+
+// もし “起動だけ先に” したい場合の互換（usi_bridge が {type:"start"} を投げてきてもOK）
+startEngineOnce();
