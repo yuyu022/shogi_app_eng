@@ -276,6 +276,15 @@ let vsAI = true;
 let aiLevel = 2;
 let aiThinking = false;
 
+function attachWorkerDebug(w, tag = "usi") {
+  w.addEventListener("error", (e) => {
+    console.error(`[${tag}] worker error`, e.message, e.filename, e.lineno, e.colno);
+  });
+  w.addEventListener("messageerror", (e) => {
+    console.error(`[${tag}] worker messageerror`, e);
+  });
+}
+
 function setAILevel(lv){
   aiLevel = lv;
   for(let i=1;i<=5;i++){
@@ -2210,6 +2219,7 @@ loadBookJson("./book.json");
 </script>
 </body>
 </html>
+
 
 
 
