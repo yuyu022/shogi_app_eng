@@ -30,27 +30,26 @@ function log(msg) {
   self.postMessage({ type: "log", message: msg });
 }
 
-// 1) エンジンへ送る（★文字列で送る）
+// 1) エンジンへ送る（USIとして送る）
+// ※ yaneuraou.k-p.js 側がオブジェクト形式を受ける想定
 function sendToEngine(line) {
   if (!engineWorker) return;
-
-  const cmd = String(line || "");
+  const cmd = String(line || "").trim();
   if (!cmd) return;
 
-  // ★重要：オブジェクトではなく「文字列」で送る
-  engineWorker.postMessage(cmd);
+  // USIコマンドはこの形で送る（多くのUSIブリッジがこの形式）
+  engineWorker.postMessage({ type: "usi", cmd });
 
   log(">> " + cmd);
 }
 
-// 2) エンジンstdoutを行で処理
+// 2) stdout を行にして処理
 function handleLine(lineRaw) {
   const line = String(lineRaw ?? "").replace(/\r$/, "");
   if (!line) return;
 
   log("<< " + line);
 
-  // 状態機械：usi -> usiok -> isready -> readyok
   if (phase === "sent_usi" && line.trim() === "usiok") {
     self.postMessage({ type: "stdout", line });
     sendToEngine("isready");
@@ -65,7 +64,6 @@ function handleLine(lineRaw) {
     return;
   }
 
-  // その他も親へ
   self.postMessage({ type: "stdout", line });
 }
 
@@ -79,9 +77,10 @@ function onEngineStdout(chunk) {
   }
 }
 
-// 3) エンジンworker起動
+// 3) ここが重要：起動するworkerを「yaneuraou.k-p.js」にする
 function startEngine() {
-  const wurl = absUrl("./yaneuraou.k-p.worker.js");
+  // ★変更点：worker.js ではなく js を起動する
+  const wurl = absUrl("./yaneuraou.k-p.js");
   engineWorker = new Worker(wurl, { type: "classic" });
 
   engineWorker.addEventListener("error", (e) => {
@@ -95,20 +94,45 @@ function startEngine() {
   engineWorker.onmessage = (e) => {
     const msg = e.data;
 
-    // よくある：エンジンは文字列で返す
+    // 文字列で返すタイプ
     if (typeof msg === "string") {
       onEngineStdout(msg);
       return;
     }
 
-    // もしオブジェクトで返す実装でも拾えるように保険
+    // オブジェクトで返すタイプ
     const m = msg || {};
-    const out =
+
+    // stdout候補（data / s / line）
+    if (m.type === "stdout") {
+      const out =
+        (typeof m.data === "string") ? m.data :
+        (typeof m.s === "string") ? m.s :
+        (typeof m.line === "string") ? (m.line + "\n") :
+        "";
+      if (out) onEngineStdout(out);
+      return;
+    }
+
+    // stderr
+    if (m.type === "stderr") {
+      self.postMessage({ type: "stderr", data: String(m.data || m.s || m.line || "") });
+      return;
+    }
+
+    // ログ
+    if (m.type === "log") {
+      self.postMessage({ type: "log", message: String(m.message || "") });
+      return;
+    }
+
+    // それ以外でも文字列っぽいものがあれば拾う
+    const fallback =
       (typeof m.data === "string") ? m.data :
       (typeof m.s === "string") ? m.s :
       (typeof m.line === "string") ? (m.line + "\n") :
       "";
-    if (out) onEngineStdout(out);
+    if (fallback) onEngineStdout(fallback);
   };
 
   // 起動したら usi を送る
@@ -125,15 +149,15 @@ self.onmessage = (e) => {
     return;
   }
 
-  // index.html からのコマンド： {type:"cmd", line:"position ..."} を想定
+  // index.html からのコマンド
   if (msg.type === "cmd") {
     sendToEngine(String(msg.line || ""));
     return;
   }
 
-  // 念のため：親が文字列で送ってきた場合も通す
-  if (typeof msg === "string") {
-    sendToEngine(msg);
+  // 旧形式が来ても動くように保険
+  if (msg.type === "usi") {
+    sendToEngine(String(msg.cmd || ""));
     return;
   }
 };
