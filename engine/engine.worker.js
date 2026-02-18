@@ -1,45 +1,36 @@
 // engine/engine.worker.js
 "use strict";
 
-// yaneuraou.k-p.js を worker 内で読み込む
-importScripts("./yaneuraou.k-p.js");
-
-// yaneuraou 側が stdout をどう吐くかはビルドによって違うので
-// とにかく「来たら親へ返す」口を作る
+// エンジンの出力（print/printErr）を親へ送る
 function postOut(s) {
-  postMessage({ type: "stdout", data: String(s ?? "") });
+  postMessage({ type: "stdout", data: String(s ?? "") + "\n" });
 }
 function postErr(s) {
-  postMessage({ type: "stderr", data: String(s ?? "") });
+  postMessage({ type: "stderr", data: String(s ?? "") + "\n" });
 }
 
-// Emscripten Module を用意（多くのビルドで効く）
+// Emscripten Module を先に用意してから読み込む（超重要）
 self.Module = self.Module || {};
 Module.print = postOut;
 Module.printErr = postErr;
 
-// 入力は「文字列1本」で受けて、そのまま標準入力に渡す想定
-// ただしビルドによってstdinの渡し方が違うため、ここで「入口だけ」統一する
+// エンジン本体を読み込む（この中で self.YaneuraOu_K_P が定義される）
+importScripts("./yaneuraou.k-p.js");
+
+// yaneuraou.k-p.js の仕様：入力は Module.postMessage("usi") の形
 self.onmessage = (e) => {
   const msg = e.data || {};
   if (msg.type === "stdin") {
-    // ここはビルドにより差が出る。
-    // まずは「Module.ccall('usi_command', ...)」のような関数があれば呼ぶ。
-    // 無ければ stdin に積む方式に寄せる。
     const line = String(msg.data || "");
-
-    // よくある: Module._onStdinLine / Module.onStdinLine が存在するパターン
-    if (typeof Module.onStdinLine === "function") {
-      Module.onStdinLine(line);
-      return;
-    }
-    if (typeof Module._onStdinLine === "function") {
-      Module._onStdinLine(line);
-      return;
-    }
-
-    // 最後の手段: stdin バッファ方式（Emscriptenが読む想定）
-    Module.stdinBuffer = (Module.stdinBuffer || "") + line;
-    return;
+    // 1行ずつ処理される想定なので、改行で分割して順番に投げる
+    line.split(/\r?\n/).forEach((one) => {
+      if (!one) return;
+      if (typeof Module.postMessage === "function") {
+        Module.postMessage(one);
+      } else {
+        // 念のため（通常ここには来ない）
+        postErr("Module.postMessage is not a function");
+      }
+    });
   }
 };
