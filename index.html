@@ -196,7 +196,7 @@ body{
 <!-- ============【★バージョン記載】============= -->
 <!-- =========================================== -->
 <div id="versionLabel">
-  Ver 1.0.2（2026.02.19 01:30） 
+  Ver 1.0.2（2026.02.19 01:45） 
 </div>
 
 <div id="app">
@@ -2135,10 +2135,10 @@ async function doAIMove(){
   // 3) レベルに応じて探索指定（無料＆ブラウザなので軽め推奨）
   //    強くしたければ depth を上げる（ただし端末が重くなる）
   let depth = 6;
-  if(aiLevel===1) depth = 4;
-  if(aiLevel===2) depth = 6;
-  if(aiLevel===3) depth = 8;
-  if(aiLevel===4) depth = 10;
+  if(aiLevel===1) depth = 1;
+  if(aiLevel===2) depth = 3;
+  if(aiLevel===3) depth = 5;
+  if(aiLevel===4) depth = 8;
   if(aiLevel===5) depth = 12;
 
   // 4) go を送って bestmove を待つ
@@ -2240,6 +2240,7 @@ loadBookJson("./book.json");
 </script>
 </body>
 </html>
+
 
 
 
