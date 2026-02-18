@@ -1,108 +1,94 @@
 // engine/engine.worker.js
 "use strict";
 
-function abs(rel) {
-  return new URL(rel, self.location.href).toString();
+let engine = null;          // YaneuraOu_K_P Module instance
+let engineReady = false;
+let inQ = [];               // stdin queue until ready
+
+function log(msg) {
+  self.postMessage({ type: "log", message: String(msg) });
 }
 
-function postOut(s) {
-  postMessage({ type: "stdout", data: String(s ?? "") + "\n" });
-}
-function postErr(s) {
-  postMessage({ type: "stderr", data: String(s ?? "") + "\n" });
-}
-function log(s) {
-  postMessage({ type: "log", message: String(s ?? "") });
+function sendStdoutLine(line) {
+  // usi_bridge 側は data を chunk として受けるので \n 付きで送る
+  self.postMessage({ type: "stdout", data: String(line) + "\n" });
 }
 
-// Module を用意（Emscripten に渡す）
-let Mod = (self.Module = self.Module || {});
-
-// stdout/stderr を usi_bridge に返す
-Mod.print = postOut;
-Mod.printErr = postErr;
-
-// ★超重要：pthread worker が importScripts する “本体JS” を明示する
-// これが undefined だと yaneuraou.k-p.worker.js 側で createObjectURL(undefined) になって死ぬ
-Mod.mainScriptUrlOrBlob = abs("./yaneuraou.k-p.js");
-
-// ★重要：wasm と pthread worker のパス解決
-Mod.locateFile = (path, prefix) => abs("./" + path);
-
-// エンジン本体ロード（MODULARIZE なので “関数” が生える）
-importScripts("./yaneuraou.k-p.js");
-
-// --- MODULARIZE 起動 ---
-let engineModule = null;
-let pending = [];
-let started = false;
-
-function getInputFn() {
-  if (engineModule && typeof engineModule.postMessage === "function") {
-    return (line) => engineModule.postMessage(line);
-  }
-  if (self.Module && typeof self.Module.postMessage === "function") {
-    return (line) => self.Module.postMessage(line);
-  }
-  return null;
+function sendStderrLine(line) {
+  self.postMessage({ type: "stderr", data: String(line) + "\n" });
 }
 
-function flushPending() {
-  const fn = getInputFn();
-  if (!fn) return false;
-  for (const line of pending) fn(line);
-  pending = [];
-  return true;
-}
-
-async function startEngineOnce() {
-  if (started) return;
-  started = true;
-
+async function boot() {
   try {
+    // yaneuraou.k-p.js をこの worker にロード
+    // ※パスは engine/ 配下から見た相対でOK（あなたの配置に合わせて調整）
+    importScripts("./yaneuraou.k-p.js");
+
     if (typeof self.YaneuraOu_K_P !== "function") {
-      postErr("YaneuraOu_K_P is not a function (MODULARIZE init failed)");
-      return;
+      throw new Error("YaneuraOu_K_P is not exposed on self");
     }
 
     log("starting YaneuraOu_K_P(Module) ...");
 
-    engineModule = await self.YaneuraOu_K_P(Mod);
-
+    engine = await self.YaneuraOu_K_P(); // ← yaneuraou.k-p.js は Promise を返す
     log("engineModule resolved");
 
-    engineModule.print = postOut;
-    engineModule.printErr = postErr;
-
-    if (!flushPending()) {
-      postErr("engine started but input still missing (no postMessage)");
+    // ★重要：エンジンの出力をここで拾う（これが無いと usi_bridge が usiok を見れない）
+    if (typeof engine.addMessageListener === "function") {
+      engine.addMessageListener((line) => {
+        // line は "usiok" とか "info ..." とか
+        sendStdoutLine(line);
+      });
     } else {
-      log("engine input ready");
+      // 保険（ここに来るならビルドが違う）
+      sendStderrLine("engine.addMessageListener is missing");
     }
+
+    engineReady = true;
+    log("engine input ready");
+
+    // 溜めてた stdin を流す
+    for (const s of inQ) {
+      try {
+        engine.postMessage(s); // ★重要：Module.postMessage ではなく engine.postMessage
+      } catch (e) {
+        sendStderrLine("send failed: " + (e?.message || e));
+      }
+    }
+    inQ = [];
   } catch (e) {
-    postErr("engine start failed: " + (e?.message || e));
-    if (e?.stack) postErr(e.stack);
+    sendStderrLine("boot failed: " + (e?.message || e));
+    throw e;
   }
 }
 
-// usi_bridge からの入力
+function handleStdin(data) {
+  // usi_bridge からは "usi\n" みたいに来るので改行は除去して送る
+  const s = String(data ?? "").replace(/\r?\n$/, "");
+  if (!s) return;
+
+  if (!engineReady || !engine) {
+    // 起動前はキュー
+    inQ.push(s);
+    sendStderrLine(`queued input (engine not ready yet): ${s}`);
+    return;
+  }
+
+  try {
+    engine.postMessage(s);
+  } catch (e) {
+    sendStderrLine("engine input not ready (" + (e?.message || e) + ")");
+  }
+}
+
 self.onmessage = (e) => {
   const msg = e.data || {};
-  if (msg.type !== "stdin") return;
-
-  startEngineOnce();
-
-  const text = String(msg.data || "");
-  const lines = text.split(/\r?\n/).filter(Boolean);
-
-  const fn = getInputFn();
-  if (fn) {
-    for (const one of lines) fn(one);
+  if (msg.type === "stdin") {
+    handleStdin(msg.data);
   } else {
-    pending.push(...lines);
-    postErr("queued input (engine not ready yet): " + lines.join(" | "));
+    // 無視（必要なら追加）
   }
 };
 
-// 起動だけ先に走らせる
-startEngineOnce();
+// 起動
+boot();
