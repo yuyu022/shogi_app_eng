@@ -196,7 +196,7 @@ body{
 <!-- ============【★バージョン記載】============= -->
 <!-- =========================================== -->
 <div id="versionLabel">
-  Ver 1.0.2（2026.02.18 23:30） 
+  Ver 1.0.2（2026.02.18 23:35） 
 </div>
 
 <div id="app">
@@ -1086,10 +1086,12 @@ function usiWaitFor(predicate, timeoutMs=8000){
       const raw = ev.data;
       const text =
         (typeof raw === "string") ? raw :
-        (raw && typeof raw === "object" && typeof raw.s === "string") ? raw.s :
+        (raw && typeof raw === "object" && raw.type === "stdout" && typeof raw.line === "string") ? raw.line :
         (raw && typeof raw === "object" && typeof raw.line === "string") ? raw.line :
+        (raw && typeof raw === "object" && typeof raw.s === "string") ? raw.s :
         (raw && typeof raw === "object" && typeof raw.data === "string") ? raw.data :
         String(raw ?? "");
+
 
       const lines = text.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
 
@@ -2234,6 +2236,7 @@ loadBookJson("./book.json");
 </script>
 </body>
 </html>
+
 
 
 
