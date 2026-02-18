@@ -1,8 +1,6 @@
 // engine/usi_bridge.worker.js
 
-// ===============================
-// 0) 落ちたら必ず親へ見える形で返す
-// ===============================
+// 0) 落ちたら必ず親へ返す
 self.addEventListener("error", (e) => {
   self.postMessage({
     type: "fatal",
@@ -32,26 +30,20 @@ function log(msg) {
   self.postMessage({ type: "log", message: msg });
 }
 
-// ===============================
-// 1) エンジンへ送る（2方式で送る）
-// - A: {type:"stdin", data:"...\n"}
-// - B: {type:"usi", cmd:"..."}  ※保険
-// ===============================
+// 1) エンジンへ送る（★文字列で送る）
 function sendToEngine(line) {
   if (!engineWorker) return;
 
-  const s = line.endsWith("\n") ? line : line + "\n";
+  const cmd = String(line || "");
+  if (!cmd) return;
 
-  // どっちの形式でも通るように保険で両方送る
-  try { engineWorker.postMessage({ type: "stdin", data: s }); } catch (_) {}
-  try { engineWorker.postMessage({ type: "usi", cmd: line }); } catch (_) {}
+  // ★重要：オブジェクトではなく「文字列」で送る
+  engineWorker.postMessage(cmd);
 
-  log(">> " + line);
+  log(">> " + cmd);
 }
 
-// ===============================
-// 2) エンジンstdoutを「行」で処理する
-// ===============================
+// 2) エンジンstdoutを行で処理
 function handleLine(lineRaw) {
   const line = String(lineRaw ?? "").replace(/\r$/, "");
   if (!line) return;
@@ -60,22 +52,20 @@ function handleLine(lineRaw) {
 
   // 状態機械：usi -> usiok -> isready -> readyok
   if (phase === "sent_usi" && line.trim() === "usiok") {
+    self.postMessage({ type: "stdout", line });
     sendToEngine("isready");
     phase = "sent_isready";
-    // usiok も親へ流す（デバッグに便利）
-    self.postMessage({ type: "stdout", line });
     return;
   }
 
   if (phase === "sent_isready" && line.trim() === "readyok") {
     phase = "ready";
-    // readyok も親へ流す（デバッグに便利）
     self.postMessage({ type: "stdout", line });
     self.postMessage({ type: "readyok" });
     return;
   }
 
-  // 他の行も親へ流しておく（bestmove 等もここに来る）
+  // その他も親へ
   self.postMessage({ type: "stdout", line });
 }
 
@@ -89,11 +79,8 @@ function onEngineStdout(chunk) {
   }
 }
 
-// ===============================
 // 3) エンジンworker起動
-// ===============================
 function startEngine() {
-  // 相対パス事故を防ぐため絶対URL化
   const wurl = absUrl("./yaneuraou.k-p.worker.js");
   engineWorker = new Worker(wurl, { type: "classic" });
 
@@ -108,61 +95,28 @@ function startEngine() {
   engineWorker.onmessage = (e) => {
     const msg = e.data;
 
-    // (1) 文字列で来る場合
+    // よくある：エンジンは文字列で返す
     if (typeof msg === "string") {
       onEngineStdout(msg);
       return;
     }
 
-    // (2) オブジェクトで来る場合
+    // もしオブジェクトで返す実装でも拾えるように保険
     const m = msg || {};
-    const t = m.type;
-
-    if (t === "stdout") {
-      // data / s / line どれでも拾う
-      const out =
-        (typeof m.data === "string") ? m.data :
-        (typeof m.s === "string") ? m.s :
-        (typeof m.line === "string") ? (m.line + "\n") : // 1行形式なら改行補完
-        "";
-      onEngineStdout(out);
-      return;
-    }
-
-    if (t === "stderr") {
-      const errText =
-        (typeof m.data === "string") ? m.data :
-        (typeof m.s === "string") ? m.s :
-        (typeof m.line === "string") ? m.line :
-        "";
-      self.postMessage({ type: "stderr", data: String(errText || "") });
-      return;
-    }
-
-    if (t === "log") {
-      self.postMessage({ type: "log", message: String(m.message || "") });
-      return;
-    }
-
-    // (3) 型が違うけど中に文字列がありそうな場合の保険
-    const fallback =
+    const out =
       (typeof m.data === "string") ? m.data :
       (typeof m.s === "string") ? m.s :
       (typeof m.line === "string") ? (m.line + "\n") :
       "";
-    if (fallback) onEngineStdout(fallback);
+    if (out) onEngineStdout(out);
   };
 
-  // 起動したら必ず usi を送る
+  // 起動したら usi を送る
   phase = "sent_usi";
   sendToEngine("usi");
 }
 
-// ===============================
 // 4) 親からのメッセージ
-// - {type:"start"} で起動
-// - {type:"cmd", line:"position ..."} などを転送
-// ===============================
 self.onmessage = (e) => {
   const msg = e.data || {};
 
@@ -171,14 +125,15 @@ self.onmessage = (e) => {
     return;
   }
 
+  // index.html からのコマンド： {type:"cmd", line:"position ..."} を想定
   if (msg.type === "cmd") {
     sendToEngine(String(msg.line || ""));
     return;
   }
 
-  // もし親が旧形式 {type:"usi", cmd:"..."} を送ってきても受ける（保険）
-  if (msg.type === "usi") {
-    sendToEngine(String(msg.cmd || ""));
+  // 念のため：親が文字列で送ってきた場合も通す
+  if (typeof msg === "string") {
+    sendToEngine(msg);
     return;
   }
 };
