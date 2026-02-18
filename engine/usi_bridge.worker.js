@@ -1,5 +1,4 @@
 // engine/usi_bridge.worker.js
-"use strict";
 
 // 落ちたら必ず親へ見える形で返す
 self.addEventListener("error", (e) => {
@@ -21,10 +20,17 @@ self.addEventListener("unhandledrejection", (e) => {
 
 let engineWorker = null;
 let buf = "";
-let phase = "boot"; // boot -> sent_usi -> sent_isready -> ready
+let phase = "boot"; // boot -> sent_usi -> wait_readyok -> ready
+
+let readyRetryTimer = null;
+let readyRetryCount = 0;
+
+function absUrl(rel) {
+  return new URL(rel, self.location.href).toString();
+}
 
 function log(msg) {
-  self.postMessage({ type: "log", message: String(msg) });
+  self.postMessage({ type: "log", message: msg });
 }
 
 function sendToEngine(line) {
@@ -34,25 +40,56 @@ function sendToEngine(line) {
   log(">> " + line);
 }
 
+function startReadyRetry() {
+  stopReadyRetry();
+  readyRetryCount = 0;
+
+  // readyok が来ないときの保険：isready を再送
+  readyRetryTimer = setInterval(() => {
+    if (phase !== "wait_readyok") return;
+    readyRetryCount++;
+    log(`(retry) isready x${readyRetryCount}`);
+    sendToEngine("isready");
+
+    // 無限にやらない（GUI側の timeout より少し短めで止める）
+    if (readyRetryCount >= 10) {
+      stopReadyRetry();
+      log("(retry) give up isready");
+    }
+  }, 400);
+}
+
+function stopReadyRetry() {
+  if (readyRetryTimer) {
+    clearInterval(readyRetryTimer);
+    readyRetryTimer = null;
+  }
+}
+
 function handleLine(lineRaw) {
   const line = lineRaw.replace(/\r$/, "");
   if (!line) return;
 
   log("<< " + line);
 
-  // USI 状態機械：usi -> usiok -> isready -> readyok
+  // 状態機械：usi -> usiok -> isready -> readyok
   if (phase === "sent_usi" && line.trim() === "usiok") {
+    log("got usiok -> send isready");
     sendToEngine("isready");
-    phase = "sent_isready";
+    phase = "wait_readyok";
+    startReadyRetry();
     return;
   }
-  if (phase === "sent_isready" && line.trim() === "readyok") {
+
+  if (phase === "wait_readyok" && line.trim() === "readyok") {
+    stopReadyRetry();
     phase = "ready";
+    log("got readyok -> READY");
     self.postMessage({ type: "readyok" });
     return;
   }
 
-  // 他の行も親へ
+  // 他の行も親に流しておく（必要ならGUI側で読む）
   self.postMessage({ type: "stdout", line });
 }
 
@@ -67,8 +104,9 @@ function onEngineStdout(chunk) {
 }
 
 function startEngine() {
-  // ここが肝：pthread用workerではなく、ラッパー engine.worker.js を起動する
-  engineWorker = new Worker("./engine.worker.js", { type: "classic" });
+  // engine worker を起動（ここは engine/engine.worker.js を呼ぶ）
+  const wurl = absUrl("./engine.worker.js");
+  engineWorker = new Worker(wurl, { type: "classic" });
 
   engineWorker.addEventListener("error", (e) => {
     self.postMessage({
@@ -81,14 +119,14 @@ function startEngine() {
   engineWorker.onmessage = (e) => {
     const msg = e.data || {};
     if (msg.type === "stdout") onEngineStdout(msg.data);
-    else if (msg.type === "stderr")
-      self.postMessage({ type: "stderr", data: String(msg.data || "") });
-    else if (msg.type === "log")
-      self.postMessage({ type: "log", message: String(msg.message || "") });
-    else self.postMessage({ type: "engine_raw", data: msg });
+    else if (msg.type === "stderr") self.postMessage({ type: "stderr", data: String(msg.data || "") });
+    else if (msg.type === "log") self.postMessage({ type: "log", message: String(msg.message || "") });
+    else if (typeof msg === "string") onEngineStdout(msg);
   };
 
   phase = "sent_usi";
+  stopReadyRetry();
+  log("send usi");
   sendToEngine("usi");
 }
 
@@ -98,6 +136,7 @@ self.onmessage = (e) => {
     startEngine();
     return;
   }
+  // GUI側からのコマンド（position/go/stop など）を転送
   if (msg.type === "cmd") {
     sendToEngine(String(msg.line || ""));
   }
