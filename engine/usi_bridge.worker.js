@@ -1,36 +1,38 @@
 // engine/usi_bridge.worker.js
 
-// ★重要：Emscripten は「グローバルの Module」を参照することがあるので
-// let ではなく var を使い、self.Module にも置く
 var Module = {
-  // pthread worker が「本体JS」を確実に importScripts できるように指定（重要）
+  // ★ここも後述の通り「origin固定」だとサブパスで壊れます
+  // いったん後で直すとして、まずは postMessage 化が最重要
   mainScriptUrlOrBlob: self.location.origin + "/engine/yaneuraou.k-p.js",
-
-  // wasm/worker の場所解決
   locateFile: (path) => self.location.origin + "/engine/" + path,
 
-  // ★stdout/stderr をメインへ転送（index.html が raw.s を拾う前提）
   print: (s) => postMessage({ type: "stdout", s: String(s) }),
   printErr: (s) => postMessage({ type: "stderr", s: String(s) }),
 };
+self.Module = Module;
 
-self.Module = Module; // ★これがないと Module.print が効かない構成がある
-
-// ★絶対URLで読み込む（/engine/... でOK）
 importScripts(self.location.origin + "/engine/yaneuraou.k-p.js");
 
-// ★Factory を呼ぶ（Promiseのはず）
+// Factory
 var enginePromise = self.YaneuraOu_K_P(Module);
 
+// ここは任意（index側が "readyok" 待ちなので、type:"ready" は無くてもOK）
 enginePromise
-  .then(() => postMessage({ type: "ready" }))
+  .then(() => postMessage({ type: "stdout", s: "bridge: enginePromise resolved" }))
   .catch((err) => postMessage({ type: "stderr", s: "init failed: " + (err?.message || err) }));
 
-// メインから {type:"usi", cmd:"isready"} を受け取って渡す
 self.onmessage = async (e) => {
   const msg = e.data;
   if (msg && msg.type === "usi") {
     await enginePromise;
-    Module.ccall("usi_command", "number", ["string"], [msg.cmd]);
+
+    // ★ここが最重要：ccall直叩きではなく、yaneuraou.k-p.js が用意したキューに投げる
+    // （busy時の再試行を内部がやってくれる）
+    if (typeof Module.postMessage === "function") {
+      Module.postMessage(msg.cmd);
+    } else {
+      // 万一の保険（通常ここには来ないはず）
+      Module.ccall("usi_command", "number", ["string"], [msg.cmd]);
+    }
   }
 };
