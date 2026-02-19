@@ -196,7 +196,7 @@ body{
 <!-- ============【★バージョン記載】============= -->
 <!-- =========================================== -->
 <div id="versionLabel">
-  Ver 1.0.2（2026.02.19 01:45） 
+  Ver 1.0.3（2026.02.20 01:55） 
 </div>
 
 <div id="app">
@@ -352,7 +352,9 @@ function saveUndoSnapshot(){
     winner: winner,
     lastMove: deepCopy(lastMove),
   };
++  undoAvailable = true; // ← 次の自分の手を指したら、Undoを再び許可
 }
+
 
 /* --- リセット（2度押し） --- */
 function onResetButton(){
@@ -2240,6 +2242,7 @@ loadBookJson("./book.json");
 </script>
 </body>
 </html>
+
 
 
 
