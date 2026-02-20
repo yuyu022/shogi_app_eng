@@ -196,7 +196,7 @@ body{
 <!-- ============【★バージョン記載】============= -->
 <!-- =========================================== -->
 <div id="versionLabel">
-  Ver 1.0.3（2026.02.20 02:00） 
+  Ver 1.0.4（2026.02.20 19:15） 
 </div>
 
 <div id="app">
@@ -2134,7 +2134,8 @@ async function doAIMove(){
   const sfen = toSFEN();
   usiPost(`position sfen ${sfen}`);
 
-  // 3) レベルに応じて探索指定（無料＆ブラウザなので軽め推奨）
+  /*
+  // --- depth方式（残しておく） ---
   //    強くしたければ depth を上げる（ただし端末が重くなる）
   let depth = 6;
   if(aiLevel===1) depth = 1;
@@ -2142,10 +2143,17 @@ async function doAIMove(){
   if(aiLevel===3) depth = 5;
   if(aiLevel===4) depth = 8;
   if(aiLevel===5) depth = 12;
-
-  // 4) go を送って bestmove を待つ
   usiPost(`go depth ${depth}`);
-
+　*/
+  // --- movetime方式（新しく使う） ---
+  let ms = 400;
+  if(aiLevel===1) ms = 100;
+  if(aiLevel===2) ms = 300;
+  if(aiLevel===3) ms = 500;
+  if(aiLevel===4) ms = 1000;
+  if(aiLevel===5) ms = 1500;
+  usiPost(`go movetime ${ms}`);
+  
   let bestLine = null;
   try{
     bestLine = await usiWaitFor(line => line.startsWith("bestmove "), 15000);
@@ -2242,6 +2250,7 @@ loadBookJson("./book.json");
 </script>
 </body>
 </html>
+
 
 
 
